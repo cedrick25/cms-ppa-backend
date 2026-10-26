@@ -22,6 +22,7 @@ Route::middleware(['auth.api', EnsureAccountIsActive::class])->group(function ()
     Route::middleware('throttle:60,1,dashboard')->group(function () {
         Route::get('/dashboard/systems', [DashboardController::class, 'systems'])->middleware('can:view-system-status')->name('dashboard.systems');
         Route::get('/dashboard/sign-ins', [DashboardController::class, 'signIns'])->middleware('can:view-sign-in-activity')->name('dashboard.sign-ins');
+        Route::get('/dashboard/activity', [DashboardController::class, 'activity'])->middleware('can:view-audit-trail')->name('dashboard.activity');
     });
 
     Route::middleware('throttle:120,1,notifications')->group(function () {

@@ -1,0 +1,21 @@
+spring:
+  task:
+    scheduling:
+      enabled: false
+  datasource:
+    url: jdbc:h2:mem:cms;MODE=MySQL;DB_CLOSE_DELAY=-1;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+  sql:
+    init:
+      mode: never
+
+cms:
+  app-key: "base64:MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
+  schema-init: false
+  bcrypt-rounds: 4
+  display-timezone: Asia/Manila

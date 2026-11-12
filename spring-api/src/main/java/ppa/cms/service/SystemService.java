@@ -99,7 +99,7 @@ public class SystemService {
     }
 
     public Map<String, Object> show(UserAccount actor, long id) {
-        Access.requireManageSystems(actor);
+        Access.requirePermission(actor, "can-view-system-details", actor != null && !actor.disabled());
         RegisteredSystem system = require(id);
         log.info("System credentials viewed. system_id={} performed_by={}", system.getId(), actor.getUsername());
         return Map.of("system", detail(system));
@@ -107,7 +107,7 @@ public class SystemService {
 
     @Transactional
     public Map<String, Object> store(UserAccount actor, Map<String, Object> body) {
-        Access.requireManageSystems(actor);
+        Access.requirePermission(actor, "can-register-system", actor != null && !actor.disabled());
         Map<String, String> plain = validate(blank(), body, null);
         RegisteredSystem system = new RegisteredSystem();
         write(system, plain);
@@ -119,7 +119,7 @@ public class SystemService {
 
     @Transactional
     public Map<String, Object> update(UserAccount actor, long id, Map<String, Object> body) {
-        Access.requireManageSystems(actor);
+        Access.requirePermission(actor, "can-update-system", actor != null && !actor.disabled());
         RegisteredSystem system = require(id);
         Map<String, String> before = readPlain(system);
         Map<String, String> plain = validate(before, body, system.getId());
@@ -146,7 +146,7 @@ public class SystemService {
 
     @Transactional
     public Map<String, Object> destroy(UserAccount actor, long id) {
-        Access.requireManageSystems(actor);
+        Access.requirePermission(actor, "can-delete-system", actor != null && !actor.disabled());
         RegisteredSystem system = require(id);
         system.setDeletedAt(Instant.now());
         systems.save(system);
@@ -157,34 +157,76 @@ public class SystemService {
 
     @Transactional
     public Map<String, Object> openRemoteDesk(UserAccount actor, long id, Map<String, Object> body) {
+        RegisteredSystem system = require(id);
+        String desk = remoteDeskLabel(actor, id, Texts.text(body.get("type")));
+        audit.record(actor, CmsAuditAction.REMOTE_DESK_OPENED, "Opened the " + desk + " remote desk for " + system.getName() + ".", system.getName(), "system", system.getId(), Map.of("remote_desk", desk));
+        return Map.of("message", "Opened the " + desk + " remote desk for " + system.getName() + ".");
+    }
+
+    /** Records a credentials-list movement: opening Details, revealing a row, or copying a remote-desk password. */
+    @Transactional
+    public Map<String, Object> recordCredentialAccess(UserAccount actor, long id, Map<String, Object> body) {
+        RegisteredSystem system = require(id);
+        String movement = Texts.text(body.get("movement"));
+        if ("viewed".equals(movement)) {
+            Access.requirePermission(actor, "can-view-system-details", actor != null && !actor.disabled());
+            log.info("System credential details viewed. system_id={} performed_by={}", system.getId(), actor.getUsername());
+            audit.record(actor, CmsAuditAction.CREDENTIALS_VIEWED, "Viewed the credential details for " + system.getName() + ".", system.getName(), "system", system.getId(), null);
+            return Map.of("message", "Viewed the credential details for " + system.getName() + ".");
+        }
+        if ("revealed".equals(movement)) {
+            Access.requirePermission(actor, "can-view-system-addresses", actor != null && !actor.disabled());
+            log.info("System details row revealed. system_id={} performed_by={}", system.getId(), actor.getUsername());
+            audit.record(actor, CmsAuditAction.CREDENTIALS_REVEALED, "Revealed the details row for " + system.getName() + ".", system.getName(), "system", system.getId(), null);
+            return Map.of("message", "Revealed the details row for " + system.getName() + ".");
+        }
+        if ("remote_viewed".equals(movement)) {
+            Access.requirePermission(actor, "can-view-remote-access", actor != null && !actor.disabled());
+            List<String> desks = new ArrayList<>();
+            for (Map<String, Object> entry : remoteAccess(system)) {
+                desks.add(String.valueOf(entry.get("label")));
+            }
+            String shown = desks.isEmpty() ? "remote desk" : String.join(", ", desks);
+            log.info("Remote desk credentials viewed. system_id={} performed_by={}", system.getId(), actor.getUsername());
+            audit.record(actor, CmsAuditAction.REMOTE_CREDENTIALS_VIEWED, "Viewed the " + shown + " credentials for " + system.getName() + ".", system.getName(), "system", system.getId(), desks.isEmpty() ? null : Map.of("remote_desk", shown));
+            return Map.of("message", "Viewed the " + shown + " credentials for " + system.getName() + ".");
+        }
+        if ("password_copied".equals(movement)) {
+            Access.requirePermission(actor, "can-view-remote-access", actor != null && !actor.disabled());
+            String type = Texts.text(body.get("type"));
+            String desk = remoteDeskLabel(actor, id, type);
+            if (!hasRemotePassword(system, type)) {
+                throw ApiException.errors(Map.of("type", List.of("This remote desk has no password to copy.")));
+            }
+            log.info("Remote desk password copied. system_id={} desk={} performed_by={}", system.getId(), desk, actor.getUsername());
+            audit.record(actor, CmsAuditAction.REMOTE_PASSWORD_COPIED, "Copied the " + desk + " password for " + system.getName() + ".", system.getName(), "system", system.getId(), Map.of("remote_desk", desk));
+            return Map.of("message", "Copied the " + desk + " password for " + system.getName() + ".");
+        }
+        throw ApiException.errors(Map.of("movement", List.of("Choose viewed, revealed, remote_viewed, or password_copied.")));
+    }
+
+    /** Confirms this account may open that system's remote desk, and returns the desk label. */
+    public String remoteDeskLabel(UserAccount actor, long id, String type) {
         Access.requireManageSystems(actor);
         RegisteredSystem system = require(id);
-        String type = Texts.text(body.get("type"));
         if (type == null) {
             throw ApiException.errors(Map.of("type", List.of("Choose a remote desk to open.")));
         }
         if (!List.of("anydesk", "rustdesk", "rdp", "ssh").contains(type)) {
             throw ApiException.errors(Map.of("type", List.of("Choose AnyDesk, RustDesk, RDP, or SSH.")));
         }
-        Map<String, Object> entry = null;
         for (Map<String, Object> candidate : remoteAccess(system)) {
             if (type.equals(candidate.get("type"))) {
-                entry = candidate;
-                break;
+                return String.valueOf(candidate.get("label"));
             }
         }
-        if (entry == null) {
-            String label = switch (type) {
-                case "anydesk" -> "AnyDesk";
-                case "rustdesk" -> "RustDesk";
-                case "rdp" -> "RDP";
-                default -> "SSH";
-            };
-            throw ApiException.errors(Map.of("type", List.of("This system has no " + label + " remote desk.")));
-        }
-        String desk = String.valueOf(entry.get("label"));
-        audit.record(actor, CmsAuditAction.REMOTE_DESK_OPENED, "Opened the " + desk + " remote desk for " + system.getName() + ".", system.getName(), "system", system.getId(), Map.of("remote_desk", desk));
-        return Map.of("message", "Opened the " + desk + " remote desk for " + system.getName() + ".");
+        String label = switch (type) {
+            case "anydesk" -> "AnyDesk";
+            case "rustdesk" -> "RustDesk";
+            case "rdp" -> "RDP";
+            default -> "SSH";
+        };
+        throw ApiException.errors(Map.of("type", List.of("This system has no " + label + " remote desk.")));
     }
 
     public RegisteredSystem require(long id) {
@@ -333,11 +375,12 @@ public class SystemService {
         row.put("name", system.getName());
         row.put("description", system.getDescription());
         row.put("environment", system.getEnvironment() == null ? null : system.getEnvironment().value());
-        row.put("remote_access", remoteAccess(system));
-        row.put("local_ip", system.getLocalIp());
-        row.put("mysql_host", system.getMysqlHost());
-        row.put("domain", system.getDomain());
-        row.put("vm_host", system.getVmHost());
+        row.put("details_hidden", true);
+        row.put("remote_access", remoteAccess(system).stream().map(SystemService::concealEntry).toList());
+        row.put("local_ip", mask(system.getLocalIp()));
+        row.put("mysql_host", mask(system.getMysqlHost()));
+        row.put("domain", mask(system.getDomain()));
+        row.put("vm_host", mask(system.getVmHost()));
         row.put("created_at", TimeFormats.iso(system.getCreatedAt()));
         row.put("updated_at", TimeFormats.iso(system.getUpdatedAt()));
         return row;
@@ -363,6 +406,29 @@ public class SystemService {
         addRemote(entries, "rdp", "RDP", system.getRdpHost(), system.getRdpHost(), system.getRdpUsername());
         addRemote(entries, "ssh", "SSH", sshTarget, system.getSshHost(), system.getSshUsername());
         return entries;
+    }
+
+    private static boolean hasRemotePassword(RegisteredSystem system, String type) {
+        String password = switch (type == null ? "" : type) {
+            case "anydesk" -> system.getAnydeskPassword();
+            case "rustdesk" -> system.getRustdeskPassword();
+            case "rdp" -> system.getRdpPassword();
+            case "ssh" -> system.getSshPassword();
+            default -> null;
+        };
+        return password != null && !password.isBlank();
+    }
+
+    private static String mask(String value) {
+        return value == null ? null : "••••";
+    }
+
+    private static Map<String, Object> concealEntry(Map<String, Object> entry) {
+        Map<String, Object> concealed = new LinkedHashMap<>(entry);
+        concealed.put("value", "••••");
+        concealed.put("address", "••••");
+        concealed.put("username", null);
+        return concealed;
     }
 
     private static void addRemote(List<Map<String, Object>> entries, String type, String label, String value, String address, String username) {

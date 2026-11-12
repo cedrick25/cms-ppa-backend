@@ -7,19 +7,43 @@ public final class Access {
 
     public static final String DISABLED = "This account is disabled. Contact a CMS-PPA administrator.";
 
+    private static volatile PermissionLookup permissions;
+
     private Access() {
     }
 
+    public static void use(PermissionLookup lookup) {
+        permissions = lookup;
+    }
+
+    public static boolean allowed(UserAccount user, String code, boolean fallback) {
+        if (user == null || user.disabled()) {
+            return false;
+        }
+        PermissionLookup lookup = permissions;
+        if (lookup != null && lookup.roleReady(user)) {
+            return lookup.allows(user, code);
+        }
+        return fallback;
+    }
+
+    public static void requirePermission(UserAccount user, String code, boolean fallback) {
+        if (!allowed(user, code, fallback)) {
+            throw ApiException.message(403, "This action is unauthorized.");
+        }
+    }
+
     public static boolean manageUsers(UserAccount user) {
-        return user != null && !user.disabled() && user.administrator();
+        return allowed(user, "can-view-users", user != null && user.administrator());
     }
 
     public static boolean manageSystems(UserAccount user) {
-        return user != null && !user.disabled();
+        return allowed(user, "can-view-credentials-management", user != null);
     }
 
     public static boolean viewAudit(UserAccount user) {
-        return manageUsers(user);
+        return allowed(user, "can-view-systems-audit-trail", user != null && user.administrator())
+                || allowed(user, "can-view-cms-audit-trail", user != null && user.administrator());
     }
 
     public static void requireManageUsers(UserAccount user) {
@@ -49,7 +73,7 @@ public final class Access {
     }
 
     public static String resetPasswordDenial(UserAccount actor, UserAccount target) {
-        if (!manageUsers(actor)) {
+        if (!allowed(actor, "can-reset-user-password", actor != null && actor.administrator())) {
             return "Your account isn't allowed to set passwords for other users.";
         }
         if (actor.getId().equals(target.getId())) {

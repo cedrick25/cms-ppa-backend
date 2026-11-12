@@ -12,7 +12,6 @@ import org.springframework.context.annotation.Primary;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.ActiveProfiles;
-import ppa.cms.domain.Role;
 import ppa.cms.domain.SystemEnvironment;
 import ppa.cms.persistence.RegisteredSystem;
 import ppa.cms.persistence.RegisteredSystemRepository;
@@ -52,7 +51,7 @@ class StatusMonitorTest {
         user.setName("Ada");
         user.setUsername("ada");
         user.setEmail("ada@example.com");
-        user.setRole(Role.ADMINISTRATOR);
+        user.setRole("administrator");
         user.setPassword(passwords.encode("Correct-Horse-1"));
         users.save(user);
         RegisteredSystem system = new RegisteredSystem();

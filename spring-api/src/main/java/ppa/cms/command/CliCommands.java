@@ -12,7 +12,6 @@ import org.springframework.boot.ExitCodeGenerator;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 import ppa.cms.config.CmsProperties;
-import ppa.cms.domain.Role;
 import ppa.cms.persistence.UserAccount;
 import ppa.cms.persistence.UserAccountRepository;
 import ppa.cms.service.AuditService;
@@ -143,7 +142,7 @@ public class CliCommands implements CommandLineRunner, ExitCodeGenerator {
         user.setName(name.trim());
         user.setUsername(username);
         user.setEmail(email);
-        user.setRole(Role.ADMINISTRATOR);
+        user.setRole("administrator");
         user.setPassword(passwords.encode(password));
         users.save(user);
         System.out.println("Administrator account created for username \"" + username + "\".");

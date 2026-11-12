@@ -54,7 +54,7 @@ public class DashboardService {
 
     @Transactional(readOnly = true)
     public Map<String, Object> systems(UserAccount actor) {
-        Access.requireManageSystems(actor);
+        Access.requirePermission(actor, "can-view-production-systems", actor != null && !actor.disabled());
         boolean canSeePrivate = Access.manageSystems(actor);
         List<Map<String, Object>> rows = new ArrayList<>();
         for (RegisteredSystem system : systems.findByEnvironmentOrderByNameAscIdAsc(SystemEnvironment.PRODUCTION)) {
@@ -70,7 +70,7 @@ public class DashboardService {
     }
 
     public Map<String, Object> signIns(UserAccount actor) {
-        Access.requireSignIns(actor);
+        Access.requirePermission(actor, "can-view-sign-in-history", actor != null && actor.administrator());
         int limit = accounts.signInLimit();
         Map<String, Object> meta = new LinkedHashMap<>();
         meta.put("shows", "recent_sign_ins");
@@ -81,8 +81,18 @@ public class DashboardService {
     }
 
     public Map<String, Object> activity(UserAccount actor, HttpServletRequest request) {
-        Access.requireViewAudit(actor);
         String series = request.getParameter("series");
+        String permission = switch (series == null ? "" : series) {
+            case "remote_desks" -> "can-view-remote-desk-activity";
+            case "credential_changes" -> "can-view-credential-change-activity";
+            case "account_changes" -> "can-view-account-change-activity";
+            default -> null;
+        };
+        if (permission != null) {
+            Access.requirePermission(actor, permission, actor != null && actor.administrator());
+        } else {
+            Access.requireViewAudit(actor);
+        }
         String range = request.getParameter("range");
         if (range == null || range.isBlank()) {
             range = "current_week";

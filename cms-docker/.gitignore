@@ -1,0 +1,4 @@
+.env
+api/*.jar
+web/site/
+INITIAL_ADMIN.txt

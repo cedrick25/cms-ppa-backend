@@ -25,7 +25,6 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.ActiveProfiles;
-import ppa.cms.domain.Role;
 import ppa.cms.persistence.UserAccount;
 import ppa.cms.persistence.UserAccountRepository;
 import ppa.cms.service.SystemImporter;
@@ -125,6 +124,46 @@ class ApiFlowTest {
         ResponseEntity<Map<String, Object>> audit = rest.exchange(url("/api/cms-audit-trail"), HttpMethod.GET, json(token, null), JSON);
         assertEquals(200, audit.getStatusCode().value());
         assertTrue(audit.getBody().get("data").toString().contains("Registered the account"));
+        @SuppressWarnings("unchecked")
+        Map<String, Object> recorded = ((java.util.List<Map<String, Object>>) audit.getBody().get("data")).get(0);
+        assertEquals("127.0.0.1", recorded.get("ip_address"));
+    }
+
+    @Test
+    void administratorManagesRolesAndAssignsPermissions() {
+        administrator("ada", "Correct-Horse-1");
+        String token = token("ada", "Correct-Horse-1");
+        ResponseEntity<Map<String, Object>> created = rest.exchange(
+                url("/api/user-roles"),
+                HttpMethod.POST,
+                json(token, Map.of("name", "Desk operator", "description", "Opens remote desks")),
+                JSON
+        );
+        assertEquals(201, created.getStatusCode().value(), String.valueOf(created.getBody()));
+        Number id = (Number) ((Map<?, ?>) created.getBody().get("data")).get("id");
+
+        ResponseEntity<Map<String, Object>> assigned = rest.exchange(
+                url("/api/user-roles/" + id + "/permissions"),
+                HttpMethod.PUT,
+                json(token, Map.of("permissions", java.util.List.of("can-view-dashboard", "can-view-credentials-management", "can-connect-anydesk"))),
+                JSON
+        );
+        assertEquals(200, assigned.getStatusCode().value(), String.valueOf(assigned.getBody()));
+        assertTrue(assigned.getBody().toString().contains("can-connect-anydesk"));
+
+        ResponseEntity<Map<String, Object>> viewed = rest.exchange(url("/api/user-roles/" + id), HttpMethod.GET, json(token, null), JSON);
+        assertEquals(200, viewed.getStatusCode().value());
+        assertTrue(viewed.getBody().toString().contains("Opens remote desks"));
+
+        UserAccount user = user("mina", "user");
+        user.setPassword(passwords.encode("mina-pass-1"));
+        users.save(user);
+        String userToken = token("mina", "mina-pass-1");
+        ResponseEntity<Map<String, Object>> forbidden = rest.exchange(url("/api/user-roles"), HttpMethod.POST, json(userToken, Map.of("name", "Other")), JSON);
+        assertEquals(403, forbidden.getStatusCode().value());
+
+        ResponseEntity<Map<String, Object>> removed = rest.exchange(url("/api/user-roles/" + id), HttpMethod.DELETE, json(token, null), JSON);
+        assertEquals(200, removed.getStatusCode().value());
     }
 
     @Test
@@ -152,6 +191,146 @@ class ApiFlowTest {
         assertEquals(200, dashboard.getStatusCode().value());
         assertTrue(dashboard.getBody().toString().contains("10.0.0.5"));
         assertFalse(dashboard.getBody().toString().contains("secret-rdp"));
+    }
+
+    @Test
+    void credentialMovementsAreRecordedOnTheCmsAuditTrail() {
+        administrator("ada", "Correct-Horse-1");
+        String token = token("ada", "Correct-Horse-1");
+        ResponseEntity<Map<String, Object>> created = rest.exchange(
+                url("/api/systems"),
+                HttpMethod.POST,
+                json(token, Map.of("name", "Portal", "environment", "production", "domain", "https://10.0.0.5")),
+                JSON
+        );
+        assertEquals(201, created.getStatusCode().value());
+        Number id = (Number) ((Map<?, ?>) created.getBody().get("system")).get("id");
+
+        ResponseEntity<Map<String, Object>> viewed = rest.exchange(url("/api/systems/" + id + "/credential-access"), HttpMethod.POST, json(token, Map.of("movement", "viewed")), JSON);
+        assertEquals(200, viewed.getStatusCode().value());
+        ResponseEntity<Map<String, Object>> revealed = rest.exchange(url("/api/systems/" + id + "/credential-access"), HttpMethod.POST, json(token, Map.of("movement", "revealed")), JSON);
+        assertEquals(200, revealed.getStatusCode().value());
+        ResponseEntity<Map<String, Object>> missingDesk = rest.exchange(
+                url("/api/systems/" + id + "/credential-access"),
+                HttpMethod.POST,
+                json(token, Map.of("movement", "password_copied", "type", "rdp")),
+                JSON
+        );
+        assertEquals(422, missingDesk.getStatusCode().value());
+
+        ResponseEntity<Map<String, Object>> withDesk = rest.exchange(
+                url("/api/systems"),
+                HttpMethod.POST,
+                json(token, Map.of("name", "Desk", "environment", "test", "rdp_host", "10.1.1.8", "rdp_password", "secret-rdp")),
+                JSON
+        );
+        assertEquals(201, withDesk.getStatusCode().value());
+        Number deskId = (Number) ((Map<?, ?>) withDesk.getBody().get("system")).get("id");
+        ResponseEntity<Map<String, Object>> copied = rest.exchange(
+                url("/api/systems/" + deskId + "/credential-access"),
+                HttpMethod.POST,
+                json(token, Map.of("movement", "password_copied", "type", "rdp")),
+                JSON
+        );
+        assertEquals(200, copied.getStatusCode().value(), String.valueOf(copied.getBody()));
+
+        ResponseEntity<Map<String, Object>> trail = rest.exchange(url("/api/cms-audit-trail?module=credentials"), HttpMethod.GET, json(token, null), JSON);
+        assertEquals(200, trail.getStatusCode().value());
+        String recorded = trail.getBody().get("data").toString();
+        assertTrue(recorded.contains("Viewed credentials"));
+        assertTrue(recorded.contains("Viewed the credential details for Portal."));
+        assertTrue(recorded.contains("Revealed system row"));
+        assertTrue(recorded.contains("Revealed the details row for Portal."));
+        assertTrue(recorded.contains("Copied remote password"));
+        assertTrue(recorded.contains("Copied the RDP password for Desk."));
+
+        ResponseEntity<Map<String, Object>> remoteViewed = rest.exchange(
+                url("/api/systems/" + deskId + "/credential-access"),
+                HttpMethod.POST,
+                json(token, Map.of("movement", "remote_viewed")),
+                JSON
+        );
+        assertEquals(200, remoteViewed.getStatusCode().value(), String.valueOf(remoteViewed.getBody()));
+        ResponseEntity<Map<String, Object>> remoteTrail = rest.exchange(url("/api/cms-audit-trail?module=credentials"), HttpMethod.GET, json(token, null), JSON);
+        assertTrue(remoteTrail.getBody().get("data").toString().contains("Viewed remote credentials"));
+        assertTrue(remoteTrail.getBody().get("data").toString().contains("Viewed the RDP credentials for Desk."));
+        assertFalse(recorded.contains("secret-rdp"));
+    }
+
+    @Test
+    void pinCanBeUpdatedWithTheCurrentPinAndResetWithTheAccountPassword() {
+        administrator("ada", "Correct-Horse-1");
+        String token = token("ada", "Correct-Horse-1");
+        ResponseEntity<Map<String, Object>> created = rest.exchange(
+                url("/api/systems"),
+                HttpMethod.POST,
+                json(token, Map.of("name", "Portal", "environment", "production")),
+                JSON
+        );
+        assertEquals(201, created.getStatusCode().value());
+        Number id = (Number) ((Map<?, ?>) created.getBody().get("system")).get("id");
+
+        ResponseEntity<Map<String, Object>> createdPin = rest.exchange(
+                url("/api/credential-confirm"),
+                HttpMethod.POST,
+                json(token, Map.of("system_id", id, "method", "pin", "pin", "1357", "pin_confirmation", "1357")),
+                JSON
+        );
+        assertEquals(200, createdPin.getStatusCode().value(), String.valueOf(createdPin.getBody()));
+
+        ResponseEntity<Map<String, Object>> wrongPin = rest.exchange(
+                url("/api/remote-desk-auth/pin"),
+                HttpMethod.POST,
+                json(token, Map.of("action", "update", "pin", "0000", "new_pin", "2468", "new_pin_confirmation", "2468")),
+                JSON
+        );
+        assertEquals(422, wrongPin.getStatusCode().value());
+
+        ResponseEntity<Map<String, Object>> updated = rest.exchange(
+                url("/api/remote-desk-auth/pin"),
+                HttpMethod.POST,
+                json(token, Map.of("action", "update", "pin", "1357", "new_pin", "2468", "new_pin_confirmation", "2468")),
+                JSON
+        );
+        assertEquals(200, updated.getStatusCode().value(), String.valueOf(updated.getBody()));
+
+        ResponseEntity<Map<String, Object>> oldPin = rest.exchange(
+                url("/api/credential-confirm"),
+                HttpMethod.POST,
+                json(token, Map.of("system_id", id, "method", "pin", "pin", "1357")),
+                JSON
+        );
+        assertEquals(422, oldPin.getStatusCode().value());
+        ResponseEntity<Map<String, Object>> newPin = rest.exchange(
+                url("/api/credential-confirm"),
+                HttpMethod.POST,
+                json(token, Map.of("system_id", id, "method", "pin", "pin", "2468")),
+                JSON
+        );
+        assertEquals(200, newPin.getStatusCode().value());
+
+        ResponseEntity<Map<String, Object>> wrongPassword = rest.exchange(
+                url("/api/remote-desk-auth/pin"),
+                HttpMethod.POST,
+                json(token, Map.of("action", "reset", "password", "nope", "new_pin", "9753", "new_pin_confirmation", "9753")),
+                JSON
+        );
+        assertEquals(422, wrongPassword.getStatusCode().value());
+
+        ResponseEntity<Map<String, Object>> reset = rest.exchange(
+                url("/api/remote-desk-auth/pin"),
+                HttpMethod.POST,
+                json(token, Map.of("action", "reset", "password", "Correct-Horse-1", "new_pin", "9753", "new_pin_confirmation", "9753")),
+                JSON
+        );
+        assertEquals(200, reset.getStatusCode().value(), String.valueOf(reset.getBody()));
+        ResponseEntity<Map<String, Object>> resetPin = rest.exchange(
+                url("/api/credential-confirm"),
+                HttpMethod.POST,
+                json(token, Map.of("system_id", id, "method", "pin", "pin", "9753")),
+                JSON
+        );
+        assertEquals(200, resetPin.getStatusCode().value());
     }
 
     @Test
@@ -189,7 +368,7 @@ class ApiFlowTest {
         user.setName(username);
         user.setUsername(username);
         user.setEmail(username + "@example.com");
-        user.setRole("administrator".equals(role) ? Role.ADMINISTRATOR : Role.USER);
+        user.setRole("administrator".equals(role) ? "administrator" : "user");
         user.setPassword(passwords.encode("unused"));
         return user;
     }

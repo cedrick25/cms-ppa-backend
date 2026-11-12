@@ -3,7 +3,8 @@ package ppa.cms.domain;
 public enum CmsAuditModule {
     SESSION("session", "Sign-in"),
     CREDENTIALS("credentials", "Credentials"),
-    USERS("users", "Users");
+    USERS("users", "Users"),
+    USER_ROLES("user_roles", "User roles");
 
     private final String value;
     private final String label;

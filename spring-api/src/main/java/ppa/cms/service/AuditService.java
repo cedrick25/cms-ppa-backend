@@ -5,9 +5,14 @@ import jakarta.persistence.criteria.CriteriaBuilder;
 import jakarta.persistence.criteria.Predicate;
 import jakarta.persistence.criteria.Root;
 import jakarta.servlet.http.HttpServletRequest;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -48,12 +53,13 @@ public class AuditService {
 
     private static final Logger log = LoggerFactory.getLogger(AuditService.class);
     private static final List<String> RECORD_SEARCH = List.of("actorName", "userLevel", "fieldOffice", "module", "action");
-    private static final List<String> CMS_SEARCH = List.of("actorName", "actorUsername", "subjectLabel", "summary");
+    private static final List<String> CMS_SEARCH = List.of("actorName", "actorUsername", "ipAddress", "subjectLabel", "summary");
 
     private final AuditRecordRepository records;
     private final AuditSourceStatusRepository statuses;
     private final EntityManager entities;
     private final CmsProperties properties;
+    private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).followRedirects(HttpClient.Redirect.NORMAL).build();
 
     public AuditService(
             AuditRecordRepository records,
@@ -68,13 +74,13 @@ public class AuditService {
     }
 
     public Map<String, Object> list(UserAccount actor, HttpServletRequest request) {
-        Access.requireViewAudit(actor);
+        Access.requirePermission(actor, "can-view-systems-audit-trail", actor != null && actor.administrator());
         return listing(request);
     }
 
     @Transactional
     public Map<String, Object> refresh(UserAccount actor, HttpServletRequest request) {
-        Access.requireViewAudit(actor);
+        Access.requirePermission(actor, "can-refresh-systems-audit", actor != null && actor.administrator());
         filters(request);
         sync();
         Map<String, Object> payload = listing(request);
@@ -83,14 +89,23 @@ public class AuditService {
     }
 
     public Map<String, Object> cmsList(UserAccount actor, HttpServletRequest request) {
-        Access.requireViewAudit(actor);
+        Access.requirePermission(actor, "can-view-cms-audit-trail", actor != null && actor.administrator());
         String search = bounded(request.getParameter("search"));
         String module = request.getParameter("module");
         if (module == null || module.isBlank()) {
             module = "all";
         }
-        if (!module.equals("all") && !List.of("session", "credentials", "users").contains(module)) {
-            throw ApiException.errors(Map.of("module", List.of("The selected module is invalid.")));
+        if (!module.equals("all")) {
+            boolean known = false;
+            for (CmsAuditModule value : CmsAuditModule.values()) {
+                if (value.value().equals(module)) {
+                    known = true;
+                    break;
+                }
+            }
+            if (!known) {
+                throw ApiException.errors(Map.of("module", List.of("The selected module is invalid.")));
+            }
         }
         ZoneId zone = ZoneId.of(properties.getDisplayTimezone());
         Instant from = start(request.getParameter("from"), zone);
@@ -231,6 +246,10 @@ public class AuditService {
             case CMIS -> properties.getAudit().getCmis();
             case PPIS -> properties.getAudit().getPpis();
         };
+        String endpoint = settings.getUrl() == null ? "" : settings.getUrl().trim();
+        if (!endpoint.isEmpty()) {
+            return readEndpoint(source, endpoint);
+        }
         String database = settings.getDatabase() == null ? "" : settings.getDatabase().trim();
         if (database.isEmpty()) {
             return Snapshot.unavailable(source.label() + " is not configured for audit reading.");
@@ -254,6 +273,106 @@ public class AuditService {
             log.warn("Audit trail could not be read from {}.", source.value(), exception);
             return Snapshot.unavailable(source.label() + " could not be read. Records already saved are unchanged.");
         }
+    }
+
+    private Snapshot readEndpoint(AuditSource source, String endpoint) {
+        try {
+            HttpRequest request = HttpRequest.newBuilder(URI.create(endpoint))
+                    .timeout(Duration.ofSeconds(120))
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString("{}"))
+                    .build();
+            HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                return Snapshot.unavailable(source.label() + " audit endpoint returned HTTP " + response.statusCode() + ".");
+            }
+            Map<String, Object> body = JsonCodec.readObject(response.body());
+            Object status = body.get("status");
+            if (!(status instanceof String text) || !"SUCCESS".equalsIgnoreCase(text)) {
+                Object message = body.get("message");
+                String detail = message instanceof String value && !value.isBlank() ? value : "The audit endpoint did not succeed.";
+                return Snapshot.unavailable(source.label() + " audit endpoint: " + clip(detail, 160));
+            }
+            if (!(body.get("payload") instanceof List<?> payload)) {
+                return Snapshot.unavailable(source.label() + " audit endpoint did not return a list of records.");
+            }
+            return new Snapshot(true, null, endpointRecords(payload));
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            log.warn("Audit trail request to {} was interrupted.", source.value(), exception);
+            return Snapshot.unavailable(source.label() + " could not be read. Records already saved are unchanged.");
+        } catch (Exception exception) {
+            log.warn("Audit trail could not be read from {}.", source.value(), exception);
+            return Snapshot.unavailable(source.label() + " could not be read. Records already saved are unchanged.");
+        }
+    }
+
+    private List<CopiedRecord> endpointRecords(List<?> payload) {
+        int limit = Math.max(1, properties.getAudit().getSyncLimit());
+        List<CopiedRecord> copied = new ArrayList<>();
+        for (Object item : payload) {
+            if (copied.size() >= limit) {
+                break;
+            }
+            if (!(item instanceof Map<?, ?> row)) {
+                continue;
+            }
+            long externalId = externalId(row.get("audit_trail_id"));
+            if (externalId < 1 || copied.stream().anyMatch(record -> record.externalId() == externalId)) {
+                continue;
+            }
+            copied.add(new CopiedRecord(
+                    externalId,
+                    clip(textValue(row.get("created_date")), 32),
+                    clip(firstText(row, "USER_FULLNAME", "USER_EMAIL"), 255),
+                    clip(textValue(row.get("USER_LEVEL_NAME")), 255),
+                    clip(textValue(row.get("FIELD_OFFICE")), 255),
+                    clip(textValue(row.get("module")), 255),
+                    clip(textValue(row.get("action")), 2000)
+            ));
+        }
+        return copied;
+    }
+
+    private long externalId(Object value) {
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        String text = textValue(value);
+        if (text != null && text.chars().allMatch(Character::isDigit)) {
+            try {
+                return Long.parseLong(text);
+            } catch (NumberFormatException ignored) {
+                return 0;
+            }
+        }
+        return 0;
+    }
+
+    private String firstText(Map<?, ?> row, String... keys) {
+        for (String key : keys) {
+            String text = textValue(row.get(key));
+            if (text != null) {
+                return text;
+            }
+        }
+        return null;
+    }
+
+    private String textValue(Object value) {
+        if (value == null) {
+            return null;
+        }
+        String text = String.valueOf(value).trim();
+        return text.isEmpty() ? null : text;
+    }
+
+    private String clip(String value, int limit) {
+        if (value == null || value.length() <= limit) {
+            return value;
+        }
+        return value.substring(0, limit);
     }
 
     private List<CopiedRecord> records(Connection connection) throws Exception {
@@ -361,6 +480,7 @@ public class AuditService {
         row.put("occurred_at", TimeFormats.iso(event.getOccurredAt()));
         row.put("actor_name", event.getActorName());
         row.put("actor_username", event.getActorUsername());
+        row.put("ip_address", event.getIpAddress());
         row.put("module", event.getModule());
         row.put("module_label", module == null ? event.getModule() : module.label());
         row.put("action", event.getAction());

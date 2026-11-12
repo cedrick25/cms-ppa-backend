@@ -9,8 +9,6 @@ import jakarta.persistence.PrePersist;
 import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
 import java.time.Instant;
-import ppa.cms.domain.Role;
-
 @Entity
 @Table(name = "users")
 public class UserAccount {
@@ -40,13 +38,18 @@ public class UserAccount {
     @Column(nullable = false, unique = true)
     private String email;
 
-    @Column(nullable = false, length = 20)
-    private Role role = Role.USER;
+    /** Code of a row in user_roles. Built-in codes are administrator and user. */
+    @Column(nullable = false, length = 40)
+    private String role = "user";
 
     private Instant emailVerifiedAt;
 
     @Column(nullable = false)
     private String password;
+
+    /** Bcrypt hash of the PIN required before a remote desk opens. Null until the user chooses one. */
+    @Column(length = 255)
+    private String remotePin;
 
     @Column(length = 100)
     private String rememberToken;
@@ -74,7 +77,7 @@ public class UserAccount {
     }
 
     public boolean administrator() {
-        return role == Role.ADMINISTRATOR;
+        return "administrator".equals(role);
     }
 
     public String auditLabel() {
@@ -141,11 +144,11 @@ public class UserAccount {
         this.email = email;
     }
 
-    public Role getRole() {
+    public String getRole() {
         return role;
     }
 
-    public void setRole(Role role) {
+    public void setRole(String role) {
         this.role = role;
     }
 
@@ -155,6 +158,14 @@ public class UserAccount {
 
     public void setPassword(String password) {
         this.password = password;
+    }
+
+    public String getRemotePin() {
+        return remotePin;
+    }
+
+    public void setRemotePin(String remotePin) {
+        this.remotePin = remotePin;
     }
 
     public Instant getDisabledAt() {

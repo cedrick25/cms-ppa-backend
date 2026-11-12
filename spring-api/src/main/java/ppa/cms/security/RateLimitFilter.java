@@ -76,8 +76,11 @@ public class RateLimitFilter extends OncePerRequestFilter {
         if (path.equals("/api/systems") && method.equals("POST")) {
             return new Rule("systems", 30);
         }
-        if (path.matches("/api/systems/\\d+(/remote-desks)?")) {
+        if (path.matches("/api/systems/\\d+(/(remote-desks|credential-access))?")) {
             return new Rule("systems", 30);
+        }
+        if (path.equals("/api/remote-desk-auth") || path.equals("/api/remote-desk-auth/challenge") || path.equals("/api/remote-desk-auth/pin") || path.equals("/api/credential-confirm")) {
+            return new Rule("remote-desk-auth", 20);
         }
         return null;
     }

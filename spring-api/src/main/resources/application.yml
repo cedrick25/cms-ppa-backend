@@ -62,12 +62,14 @@ cms:
       database: ${AUDIT_UAMS_DATABASE:}
       username: ${AUDIT_UAMS_USERNAME:${DB_USERNAME:root}}
       password: ${AUDIT_UAMS_PASSWORD:${DB_PASSWORD:}}
+      url: ${AUDIT_UAMS_URL:}
     cmis:
       host: ${AUDIT_CMIS_HOST:${DB_HOST:127.0.0.1}}
       port: ${AUDIT_CMIS_PORT:${DB_PORT:3306}}
       database: ${AUDIT_CMIS_DATABASE:}
       username: ${AUDIT_CMIS_USERNAME:${DB_USERNAME:root}}
       password: ${AUDIT_CMIS_PASSWORD:${DB_PASSWORD:}}
+      url: ${AUDIT_CMIS_URL:}
     ppis:
       host: ${AUDIT_PPIS_HOST:${DB_HOST:127.0.0.1}}
       port: ${AUDIT_PPIS_PORT:${DB_PORT:3306}}

@@ -310,6 +310,7 @@ public class CmsProperties {
         private String database = "";
         private String username = "root";
         private String password = "";
+        private String url = "";
 
         public String getHost() {
             return host;
@@ -349,6 +350,14 @@ public class CmsProperties {
 
         public void setPassword(String password) {
             this.password = password;
+        }
+
+        public String getUrl() {
+            return url;
+        }
+
+        public void setUrl(String url) {
+            this.url = url;
         }
     }
 }

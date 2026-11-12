@@ -24,7 +24,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import ppa.cms.config.CmsProperties;
 import ppa.cms.domain.CmsAuditAction;
-import ppa.cms.domain.Role;
 import ppa.cms.persistence.ApiToken;
 import ppa.cms.persistence.ApiTokenRepository;
 import ppa.cms.persistence.SignInEvent;
@@ -33,6 +32,7 @@ import ppa.cms.persistence.StoredNotification;
 import ppa.cms.persistence.StoredNotificationRepository;
 import ppa.cms.persistence.UserAccount;
 import ppa.cms.persistence.UserAccountRepository;
+import ppa.cms.persistence.UserRoleRepository;
 import ppa.cms.security.Access;
 import ppa.cms.security.AttemptWindow;
 import ppa.cms.security.TokenAuthenticationFilter;
@@ -59,6 +59,8 @@ public class AccountService {
     private final JdbcTemplate jdbc;
     private final EntityManager entities;
     private final CmsProperties properties;
+    private final PermissionService permissions;
+    private final UserRoleRepository userRoles;
     private final SecureRandom random = new SecureRandom();
 
     public AccountService(
@@ -71,7 +73,9 @@ public class AccountService {
             CmsAudit audit,
             JdbcTemplate jdbc,
             EntityManager entities,
-            CmsProperties properties
+            CmsProperties properties,
+            PermissionService permissions,
+            UserRoleRepository userRoles
     ) {
         this.users = users;
         this.tokens = tokens;
@@ -83,6 +87,8 @@ public class AccountService {
         this.jdbc = jdbc;
         this.entities = entities;
         this.properties = properties;
+        this.permissions = permissions;
+        this.userRoles = userRoles;
     }
 
     public Map<String, Object> signIn(Map<String, Object> body, HttpServletRequest request) {
@@ -232,7 +238,7 @@ public class AccountService {
 
     @Transactional
     public Map<String, Object> register(UserAccount actor, Map<String, Object> body) {
-        Access.requireManageUsers(actor);
+        Access.requirePermission(actor, "can-register-user", actor != null && actor.administrator());
         AccountInput input = accountInput(body, true);
         String password = Texts.text(body.get("password"));
         Map<String, List<String>> errors = Texts.errors();
@@ -261,13 +267,13 @@ public class AccountService {
         account.put("suffix", user.getSuffix());
         account.put("username", user.getUsername());
         account.put("email", user.getEmail());
-        account.put("role", user.getRole().value());
+        account.put("role", user.getRole());
         return Map.of("message", "Account created.", "user", account);
     }
 
     @Transactional
     public Map<String, Object> updateUser(UserAccount actor, long id, Map<String, Object> body) {
-        Access.requireManageUsers(actor);
+        Access.requirePermission(actor, "can-update-user", actor != null && actor.administrator());
         UserAccount user = requireUser(id);
         AccountInput input = accountInput(body, true);
         List<String> changed = changedFields(user, input);
@@ -284,7 +290,7 @@ public class AccountService {
 
     @Transactional
     public Map<String, Object> disable(UserAccount actor, long id) {
-        Access.requireManageUsers(actor);
+        Access.requirePermission(actor, "can-disable-user", actor != null && actor.administrator());
         UserAccount user = requireUser(id);
         if (actor.getId().equals(user.getId())) {
             throw ApiException.errors(Map.of("account", List.of("You can't disable your own account.")));
@@ -301,7 +307,7 @@ public class AccountService {
 
     @Transactional
     public Map<String, Object> enable(UserAccount actor, long id) {
-        Access.requireManageUsers(actor);
+        Access.requirePermission(actor, "can-enable-user", actor != null && actor.administrator());
         UserAccount user = requireUser(id);
         if (user.disabled()) {
             user.setDisabledAt(null);
@@ -313,7 +319,7 @@ public class AccountService {
 
     @Transactional
     public Map<String, Object> resetPassword(UserAccount actor, long id, Map<String, Object> body) {
-        Access.requireManageUsers(actor);
+        Access.requirePermission(actor, "can-reset-user-password", actor != null && actor.administrator());
         UserAccount user = requireUser(id);
         String denial = Access.resetPasswordDenial(actor, user);
         if (denial != null) {
@@ -342,7 +348,7 @@ public class AccountService {
 
     @Transactional
     public Map<String, Object> destroy(UserAccount actor, long id, Map<String, Object> body) {
-        Access.requireManageUsers(actor);
+        Access.requirePermission(actor, "can-delete-user", actor != null && actor.administrator());
         UserAccount user = requireUser(id);
         if (actor.getId().equals(user.getId())) {
             throw ApiException.errors(Map.of("account", List.of("You can't remove your own account.")));
@@ -507,13 +513,13 @@ public class AccountService {
         } else if (!username.matches("[a-z0-9._-]+")) {
             Texts.add(errors, "username", "Use only letters, numbers, dots, underscores, and hyphens. No spaces.");
         }
-        Role role = null;
+        String role = null;
         if (roleRequired) {
-            role = Role.from(Texts.text(body.get("role")));
-            if (Texts.text(body.get("role")) == null) {
+            role = Texts.text(body.get("role"));
+            if (role == null) {
                 Texts.add(errors, "role", "Choose a role.");
-            } else if (role == null) {
-                Texts.add(errors, "role", "Choose Administrator or User.");
+            } else if (!userRoles.existsByCode(role)) {
+                Texts.add(errors, "role", "Choose a role from the list.");
             }
         }
         Texts.finish(errors);
@@ -528,7 +534,7 @@ public class AccountService {
                 || differs(user.getName(), input.name())
                 || differs(user.getUsername(), input.username())
                 || differs(user.getEmail(), input.email())
-                || (includeRole && user.getRole() != input.role());
+                || (includeRole && differs(user.getRole(), input.role()));
         user.setName(input.name());
         user.setFirstName(input.first());
         user.setMiddleName(input.middle());
@@ -565,7 +571,7 @@ public class AccountService {
         if (differs(user.getEmail(), input.email())) {
             changed.add("email");
         }
-        if (user.getRole() != input.role()) {
+        if (differs(user.getRole(), input.role())) {
             changed.add("role");
         }
         return changed;
@@ -577,8 +583,9 @@ public class AccountService {
         account.put("name", user.getName());
         account.put("username", user.getUsername());
         account.put("email", user.getEmail());
-        account.put("role", user.getRole().value());
-        account.put("can", Map.of("manage_users", Access.manageUsers(user)));
+        account.put("role", user.getRole());
+        account.put("permissions", permissions.codesFor(user));
+        account.put("can", accessFlags(user));
         return account;
     }
 
@@ -592,13 +599,21 @@ public class AccountService {
         account.put("suffix", user.getSuffix());
         account.put("username", user.getUsername());
         account.put("email", user.getEmail());
-        account.put("role", user.getRole().value());
-        account.put("can", Map.of(
-                "manage_users", Access.manageUsers(user),
-                "manage_systems", Access.manageSystems(user),
-                "view_audit_trail", Access.viewAudit(user)
-        ));
+        account.put("role", user.getRole());
+        account.put("permissions", permissions.codesFor(user));
+        account.put("can", accessFlags(user));
         return account;
+    }
+
+    private Map<String, Object> accessFlags(UserAccount user) {
+        Map<String, Object> can = new LinkedHashMap<>();
+        boolean administrator = user.administrator();
+        can.put("manage_users", Access.manageUsers(user));
+        can.put("manage_systems", Access.manageSystems(user));
+        can.put("view_audit_trail", Access.allowed(user, "can-view-systems-audit-trail", administrator));
+        can.put("view_cms_audit_trail", Access.allowed(user, "can-view-cms-audit-trail", administrator));
+        can.put("manage_user_roles", Access.allowed(user, "can-view-user-roles", administrator));
+        return can;
     }
 
     private Map<String, Object> userResource(UserAccount actor, UserAccount user) {
@@ -611,7 +626,7 @@ public class AccountService {
         account.put("suffix", user.getSuffix());
         account.put("username", user.getUsername());
         account.put("email", user.getEmail());
-        account.put("role", user.getRole().value());
+        account.put("role", user.getRole());
         account.put("status", user.disabled() ? "disabled" : "active");
         account.put("disabled_at", TimeFormats.iso(user.getDisabledAt()));
         account.put("created_at", TimeFormats.iso(user.getCreatedAt()));
@@ -668,6 +683,6 @@ public class AccountService {
         return left == null ? right != null : !left.equals(right);
     }
 
-    private record AccountInput(String name, String first, String middle, String last, String suffix, String username, String email, Role role) {
+    private record AccountInput(String name, String first, String middle, String last, String suffix, String username, String email, String role) {
     }
 }

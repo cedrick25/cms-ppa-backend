@@ -30,6 +30,9 @@ public class CmsAuditEvent {
     @Column(nullable = false)
     private String actorUsername;
 
+    @Column(length = 45)
+    private String ipAddress;
+
     @Column(nullable = false, length = 20)
     private String module;
 
@@ -101,6 +104,14 @@ public class CmsAuditEvent {
 
     public void setActorUsername(String actorUsername) {
         this.actorUsername = actorUsername;
+    }
+
+    public String getIpAddress() {
+        return ipAddress;
+    }
+
+    public void setIpAddress(String ipAddress) {
+        this.ipAddress = ipAddress;
     }
 
     public String getModule() {

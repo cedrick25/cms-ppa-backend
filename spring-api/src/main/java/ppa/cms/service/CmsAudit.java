@@ -1,11 +1,9 @@
 package ppa.cms.service;
 
-import jakarta.servlet.http.HttpServletRequest;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -16,6 +14,7 @@ import ppa.cms.domain.CmsAuditAction;
 import ppa.cms.persistence.CmsAuditEvent;
 import ppa.cms.persistence.CmsAuditEventRepository;
 import ppa.cms.persistence.UserAccount;
+import ppa.cms.support.ClientAddress;
 import ppa.cms.support.JsonCodec;
 
 @Service
@@ -51,23 +50,7 @@ public class CmsAudit {
         if (!(attributes instanceof ServletRequestAttributes servlet)) {
             return null;
         }
-        HttpServletRequest request = servlet.getRequest();
-        String address = request.getRemoteAddr();
-        if (address == null || address.isBlank()) {
-            return null;
-        }
-        String value = address.trim();
-        if (value.startsWith("[") && value.endsWith("]") && value.length() > 2) {
-            value = value.substring(1, value.length() - 1);
-        }
-        int zone = value.indexOf('%');
-        if (zone > 0) {
-            value = value.substring(0, zone);
-        }
-        if (value.toLowerCase(Locale.ROOT).startsWith("::ffff:") && value.indexOf('.', 7) > 0) {
-            value = value.substring(7);
-        }
-        return value.length() > 45 ? value.substring(0, 45) : value;
+        return ClientAddress.from(servlet.getRequest());
     }
 
     private static Map<String, Object> safeDetails(Map<String, Object> details) {

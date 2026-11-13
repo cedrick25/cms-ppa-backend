@@ -49,11 +49,11 @@ Build the JAR on a machine that has JDK 25, from `cms-ppa-backend/spring-api`:
 
 The JAR is `spring-api\build\libs\cms-ppa-api.jar`. Copy it to `cms-docker/api/cms-ppa-api.jar`.
 
-The API container runs `techcedd/cms-ppa-api:2.0.1` from Docker Hub. Build and push that image from a machine logged in as `techcedd`, with the JAR in `cms-docker/api`:
+The API container runs `techcedd/cms-ppa-api:2.0.2` from Docker Hub. Build and push that image from a machine logged in as `techcedd`, with the JAR in `cms-docker/api`:
 
 ```bash
-docker build -t techcedd/cms-ppa-api:2.0.1 cms-docker/api
-docker push techcedd/cms-ppa-api:2.0.1
+docker build -t techcedd/cms-ppa-api:2.0.2 cms-docker/api
+docker push techcedd/cms-ppa-api:2.0.2
 ```
 
 ## 3. Settings
@@ -132,7 +132,7 @@ Sign in with the administrator account. The API is also on port 8080: `http://19
 
 ## 7. Update a later build
 
-1. Build a new `cms-ppa-api.jar`, place it in `cms-docker/api`, then build and push `techcedd/cms-ppa-api:2.0.1`.
+1. Build a new `cms-ppa-api.jar`, place it in `cms-docker/api`, then build and push `techcedd/cms-ppa-api:2.0.2`.
 2. From `~/cms-ppa` run `git pull`.
 3. From `~/cms-docker` run `docker compose pull api` and `docker compose up -d`.
 

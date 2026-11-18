@@ -258,6 +258,73 @@ class ApiFlowTest {
     }
 
     @Test
+    void mysqlCopiesRenamesAndRemoteUpdatesAreRecorded() {
+        administrator("ada", "Correct-Horse-1");
+        String token = token("ada", "Correct-Horse-1");
+        ResponseEntity<Map<String, Object>> created = rest.exchange(
+                url("/api/systems"),
+                HttpMethod.POST,
+                json(token, Map.of(
+                        "name", "Ledger",
+                        "environment", "production",
+                        "local_ip", "10.4.4.4",
+                        "mysql_host", "10.4.4.5",
+                        "mysql_username", "ledger",
+                        "mysql_password", "secret-mysql",
+                        "domain", "ledger.internal",
+                        "vm_host", "10.4.4.6",
+                        "rdp_host", "10.4.4.7"
+                )),
+                JSON
+        );
+        assertEquals(201, created.getStatusCode().value());
+        Number id = (Number) ((Map<?, ?>) created.getBody().get("system")).get("id");
+
+        ResponseEntity<Map<String, Object>> viewed = rest.exchange(url("/api/systems/" + id + "/credential-access"), HttpMethod.POST, json(token, Map.of("movement", "viewed")), JSON);
+        assertEquals(200, viewed.getStatusCode().value());
+        for (String field : java.util.List.of("local_ip", "mysql_host", "domain", "vm_host")) {
+            ResponseEntity<Map<String, Object>> copied = rest.exchange(
+                    url("/api/systems/" + id + "/credential-access"),
+                    HttpMethod.POST,
+                    json(token, Map.of("movement", "field_copied", "field", field)),
+                    JSON
+            );
+            assertEquals(200, copied.getStatusCode().value(), String.valueOf(copied.getBody()));
+            assertFalse(copied.getBody().toString().contains("secret-mysql"));
+        }
+        ResponseEntity<Map<String, Object>> renamed = rest.exchange(
+                url("/api/systems/" + id),
+                HttpMethod.PATCH,
+                json(token, Map.of("name", "Ledger West", "rdp_host", "10.4.4.8", "mysql_password", "secret-mysql-2")),
+                JSON
+        );
+        assertEquals(200, renamed.getStatusCode().value(), String.valueOf(renamed.getBody()));
+
+        ResponseEntity<Map<String, Object>> trail = rest.exchange(url("/api/cms-audit-trail?module=credentials"), HttpMethod.GET, json(token, null), JSON);
+        String recorded = trail.getBody().get("data").toString();
+        assertTrue(recorded.contains("Viewed the MySQL credentials for Ledger."));
+        assertTrue(recorded.contains("Copied the local IP for Ledger."));
+        assertTrue(recorded.contains("Copied the MySQL IP for Ledger."));
+        assertTrue(recorded.contains("Copied the domain for Ledger."));
+        assertTrue(recorded.contains("Copied the VM credentials for Ledger."));
+        assertTrue(recorded.contains("Updated the information system name from Ledger to Ledger West."));
+        assertTrue(recorded.contains("Updated the remote desk credentials for Ledger West."));
+        assertTrue(recorded.contains("Updated the MySQL credentials for Ledger West."));
+        assertFalse(recorded.contains("secret-mysql"));
+
+        ResponseEntity<Map<String, Object>> activity = rest.exchange(url("/api/dashboard/activity?series=account_changes&range=current_week"), HttpMethod.GET, json(token, null), JSON);
+        assertEquals(200, activity.getStatusCode().value());
+        assertEquals("MySQL credentials", ((Map<?, ?>) activity.getBody().get("meta")).get("series_label"));
+        assertTrue(((Number) ((Map<?, ?>) activity.getBody().get("meta")).get("total")).intValue() >= 1);
+        ResponseEntity<Map<String, Object>> names = rest.exchange(url("/api/dashboard/activity?series=credential_changes&range=current_week"), HttpMethod.GET, json(token, null), JSON);
+        assertEquals("Information systems", ((Map<?, ?>) names.getBody().get("meta")).get("series_label"));
+        assertTrue(((Number) ((Map<?, ?>) names.getBody().get("meta")).get("total")).intValue() >= 1);
+        ResponseEntity<Map<String, Object>> desks = rest.exchange(url("/api/dashboard/activity?series=remote_desks&range=current_week"), HttpMethod.GET, json(token, null), JSON);
+        assertEquals("Remote desks", ((Map<?, ?>) desks.getBody().get("meta")).get("series_label"));
+        assertTrue(((Number) ((Map<?, ?>) desks.getBody().get("meta")).get("total")).intValue() >= 1);
+    }
+
+    @Test
     void pinCanBeUpdatedWithTheCurrentPinAndResetWithTheAccountPassword() {
         administrator("ada", "Correct-Horse-1");
         String token = token("ada", "Correct-Horse-1");

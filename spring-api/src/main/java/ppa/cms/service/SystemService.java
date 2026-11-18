@@ -48,6 +48,11 @@ public class SystemService {
             "anydesk_password", "rustdesk_password", "rdp_password", "ssh_password",
             "local_password", "mysql_password", "domain_password", "vm_password", "notes"
     );
+    private static final List<String> REMOTE_FIELDS = List.of(
+            "anydesk_id", "anydesk_password", "rustdesk_id", "rustdesk_password",
+            "rdp_host", "rdp_username", "rdp_password", "ssh_host", "ssh_username", "ssh_password"
+    );
+    private static final List<String> MYSQL_FIELDS = List.of("mysql_host", "mysql_username", "mysql_password");
 
     private final RegisteredSystemRepository systems;
     private final StatusCheckRepository checks;
@@ -139,6 +144,7 @@ public class SystemService {
         if (!changed.isEmpty()) {
             log.info("System credentials updated. system_id={} performed_by={}", system.getId(), actor.getUsername());
             audit.record(actor, CmsAuditAction.CREDENTIALS_UPDATED, "Updated credentials for " + system.getName() + ".", system.getName(), "system", system.getId(), Map.of("changed", changed));
+            recordFocusedChanges(actor, system, before, plain, changed);
         }
         String message = changed.isEmpty() ? "No changes were needed for " + system.getName() + "." : "Changes saved for " + system.getName() + ".";
         return Map.of("message", message, "system", detail(system));
@@ -148,10 +154,14 @@ public class SystemService {
     public Map<String, Object> destroy(UserAccount actor, long id) {
         Access.requirePermission(actor, "can-delete-system", actor != null && !actor.disabled());
         RegisteredSystem system = require(id);
+        Map<String, String> plain = readPlain(system);
         system.setDeletedAt(Instant.now());
         systems.save(system);
         log.info("System credentials removed. system_id={} performed_by={}", system.getId(), actor.getUsername());
         audit.record(actor, CmsAuditAction.CREDENTIALS_REMOVED, "Removed credentials for " + system.getName() + ".", system.getName(), "system", system.getId(), null);
+        if (anyPresent(plain, MYSQL_FIELDS)) {
+            audit.record(actor, CmsAuditAction.MYSQL_CREDENTIALS_REMOVED, "Removed the MySQL credentials for " + system.getName() + ".", system.getName(), "system", system.getId(), null);
+        }
         return Map.of("message", "System removed: " + system.getName() + ".");
     }
 
@@ -172,6 +182,10 @@ public class SystemService {
             Access.requirePermission(actor, "can-view-system-details", actor != null && !actor.disabled());
             log.info("System credential details viewed. system_id={} performed_by={}", system.getId(), actor.getUsername());
             audit.record(actor, CmsAuditAction.CREDENTIALS_VIEWED, "Viewed the credential details for " + system.getName() + ".", system.getName(), "system", system.getId(), null);
+            if (hasMysql(system)) {
+                log.info("MySQL credentials viewed. system_id={} performed_by={}", system.getId(), actor.getUsername());
+                audit.record(actor, CmsAuditAction.MYSQL_CREDENTIALS_VIEWED, "Viewed the MySQL credentials for " + system.getName() + ".", system.getName(), "system", system.getId(), null);
+            }
             return Map.of("message", "Viewed the credential details for " + system.getName() + ".");
         }
         if ("revealed".equals(movement)) {
@@ -202,7 +216,87 @@ public class SystemService {
             audit.record(actor, CmsAuditAction.REMOTE_PASSWORD_COPIED, "Copied the " + desk + " password for " + system.getName() + ".", system.getName(), "system", system.getId(), Map.of("remote_desk", desk));
             return Map.of("message", "Copied the " + desk + " password for " + system.getName() + ".");
         }
-        throw ApiException.errors(Map.of("movement", List.of("Choose viewed, revealed, remote_viewed, or password_copied.")));
+        if ("field_copied".equals(movement)) {
+            Access.requirePermission(actor, "can-view-system-addresses", actor != null && !actor.disabled());
+            String field = Texts.text(body.get("field"));
+            CmsAuditAction action = copyAction(field);
+            if (action == null) {
+                throw ApiException.errors(Map.of("field", List.of("Choose local IP, MySQL, domain, or VM.")));
+            }
+            if (!hasCopiedField(system, field)) {
+                throw ApiException.errors(Map.of("field", List.of("This column has nothing to copy.")));
+            }
+            String summary = switch (field) {
+                case "local_ip" -> "Copied the local IP for " + system.getName() + ".";
+                case "mysql_host" -> "Copied the MySQL IP for " + system.getName() + ".";
+                case "mysql_username" -> "Copied the MySQL user for " + system.getName() + ".";
+                case "mysql_password" -> "Copied the MySQL password for " + system.getName() + ".";
+                case "domain" -> "Copied the domain for " + system.getName() + ".";
+                default -> "Copied the VM credentials for " + system.getName() + ".";
+            };
+            log.info("Credential column copied. system_id={} field={} performed_by={}", system.getId(), field, actor.getUsername());
+            audit.record(actor, action, summary, system.getName(), "system", system.getId(), null);
+            return Map.of("message", summary);
+        }
+        throw ApiException.errors(Map.of("movement", List.of("Choose viewed, revealed, remote_viewed, password_copied, or field_copied.")));
+    }
+
+    private void recordFocusedChanges(UserAccount actor, RegisteredSystem system, Map<String, String> before, Map<String, String> plain, List<String> changed) {
+        if (changed.contains("name")) {
+            audit.record(actor, CmsAuditAction.SYSTEM_NAME_UPDATED, "Updated the information system name from " + before.get("name") + " to " + system.getName() + ".", system.getName(), "system", system.getId(), Map.of("changed", List.of("name")));
+        }
+        List<String> remoteChanged = changed.stream().filter(REMOTE_FIELDS::contains).toList();
+        if (!remoteChanged.isEmpty()) {
+            audit.record(actor, CmsAuditAction.REMOTE_CREDENTIALS_UPDATED, "Updated the remote desk credentials for " + system.getName() + ".", system.getName(), "system", system.getId(), Map.of("changed", remoteChanged));
+        }
+        List<String> mysqlChanged = changed.stream().filter(MYSQL_FIELDS::contains).toList();
+        if (!mysqlChanged.isEmpty()) {
+            boolean removed = anyPresent(before, MYSQL_FIELDS) && !anyPresent(plain, MYSQL_FIELDS);
+            CmsAuditAction action = removed ? CmsAuditAction.MYSQL_CREDENTIALS_REMOVED : CmsAuditAction.MYSQL_CREDENTIALS_UPDATED;
+            String summary = (removed ? "Removed the MySQL credentials for " : "Updated the MySQL credentials for ") + system.getName() + ".";
+            audit.record(actor, action, summary, system.getName(), "system", system.getId(), Map.of("changed", mysqlChanged));
+        }
+    }
+
+    private static boolean anyPresent(Map<String, String> values, List<String> fields) {
+        for (String field : fields) {
+            String value = values.get(field);
+            if (value != null && !value.isBlank()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean hasMysql(RegisteredSystem system) {
+        return present(system.getMysqlHost()) || present(system.getMysqlUsername()) || present(system.getMysqlPassword());
+    }
+
+    private static boolean hasCopiedField(RegisteredSystem system, String field) {
+        String value = switch (field) {
+            case "local_ip" -> system.getLocalIp();
+            case "mysql_host" -> system.getMysqlHost();
+            case "mysql_username" -> system.getMysqlUsername();
+            case "mysql_password" -> system.getMysqlPassword();
+            case "domain" -> system.getDomain();
+            case "vm_host" -> system.getVmHost();
+            default -> null;
+        };
+        return present(value);
+    }
+
+    private static CmsAuditAction copyAction(String field) {
+        return switch (field == null ? "" : field) {
+            case "local_ip" -> CmsAuditAction.LOCAL_IP_COPIED;
+            case "mysql_host", "mysql_username", "mysql_password" -> CmsAuditAction.MYSQL_CREDENTIALS_COPIED;
+            case "domain" -> CmsAuditAction.DOMAIN_COPIED;
+            case "vm_host" -> CmsAuditAction.VM_CREDENTIALS_COPIED;
+            default -> null;
+        };
+    }
+
+    private static boolean present(String value) {
+        return value != null && !value.isBlank();
     }
 
     /** Confirms this account may open that system's remote desk, and returns the desk label. */
@@ -379,6 +473,8 @@ public class SystemService {
         row.put("remote_access", remoteAccess(system).stream().map(SystemService::concealEntry).toList());
         row.put("local_ip", mask(system.getLocalIp()));
         row.put("mysql_host", mask(system.getMysqlHost()));
+        row.put("mysql_username", mask(system.getMysqlUsername()));
+        row.put("mysql_password", mask(system.getMysqlPassword()));
         row.put("domain", mask(system.getDomain()));
         row.put("vm_host", mask(system.getVmHost()));
         row.put("created_at", TimeFormats.iso(system.getCreatedAt()));

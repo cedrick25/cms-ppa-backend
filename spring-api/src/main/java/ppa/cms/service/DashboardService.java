@@ -98,9 +98,17 @@ public class DashboardService {
             range = "current_week";
         }
         List<CmsAuditAction> actions = switch (series == null ? "" : series) {
-            case "remote_desks" -> List.of(CmsAuditAction.REMOTE_DESK_OPENED);
-            case "credential_changes" -> List.of(CmsAuditAction.CREDENTIALS_REGISTERED, CmsAuditAction.CREDENTIALS_UPDATED, CmsAuditAction.CREDENTIALS_REMOVED);
-            case "account_changes" -> List.of(CmsAuditAction.USER_REGISTERED, CmsAuditAction.USER_UPDATED, CmsAuditAction.USER_DISABLED, CmsAuditAction.USER_REMOVED);
+            case "remote_desks" -> List.of(
+                    CmsAuditAction.REMOTE_DESK_OPENED,
+                    CmsAuditAction.REMOTE_CREDENTIALS_VIEWED,
+                    CmsAuditAction.REMOTE_CREDENTIALS_UPDATED,
+                    CmsAuditAction.REMOTE_PASSWORD_COPIED);
+            case "credential_changes" -> List.of(CmsAuditAction.SYSTEM_NAME_UPDATED);
+            case "account_changes" -> List.of(
+                    CmsAuditAction.MYSQL_CREDENTIALS_VIEWED,
+                    CmsAuditAction.MYSQL_CREDENTIALS_COPIED,
+                    CmsAuditAction.MYSQL_CREDENTIALS_UPDATED,
+                    CmsAuditAction.MYSQL_CREDENTIALS_REMOVED);
             default -> null;
         };
         if (actions == null) {
@@ -153,9 +161,9 @@ public class DashboardService {
             ));
         }
         String seriesLabel = switch (series) {
-            case "remote_desks" -> "Remote desks opened";
-            case "credential_changes" -> "Credential changes";
-            default -> "Account changes";
+            case "remote_desks" -> "Remote desks";
+            case "credential_changes" -> "Information systems";
+            default -> "MySQL credentials";
         };
         Map<String, Object> meta = new LinkedHashMap<>();
         meta.put("series", series);
